@@ -1,0 +1,238 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+        "Description": "DDB Lab 01 - https://github.com/linuxacademy/content-dynamodb-deepdive/tree/master/labs/solutions/ProcessingDynamoDBStreamsUsingLambda",
+        "Resources": {
+            "DDBVPC": {
+                "Type": "AWS::EC2::VPC",
+                "Properties": {
+                    "CidrBlock": "10.0.0.0/16",
+                    "EnableDnsHostnames": true,
+                    "EnableDnsSupport": true,
+                    "InstanceTenancy": "default"
+                }
+            },
+            
+            "TATOURNEY": {
+                "Type": "AWS::DynamoDB::Table",
+                "Properties": {
+                    "AttributeDefinitions" : [
+                        {
+                            "AttributeName": "game",
+                            "AttributeType": "N"
+                        },
+                        {
+                            "AttributeName": "player",
+                            "AttributeType": "S"
+                        },
+                        {
+                            "AttributeName": "winner",
+                            "AttributeType": "N"
+                        }
+                    ],
+                    "KeySchema" : [
+                        {
+                            "AttributeName": "game",
+                            "KeyType": "HASH"
+                        },
+                        {
+                            "AttributeName": "player",
+                            "KeyType": "RANGE"
+                        }
+                    ],
+                    "GlobalSecondaryIndexes": [
+                        {
+                            "IndexName": "winner-index",
+                            "KeySchema": [
+                                {
+                                    "AttributeName": "winner",
+                                    "KeyType": "HASH"
+                                }
+                            ],
+                            "Projection": {
+                                "ProjectionType": "ALL"
+                            }
+                        }
+                    ],
+                    "StreamSpecification": {
+                        "StreamViewType": "NEW_IMAGE"
+                    },
+                    "TableName": "TaTourney",
+                    "BillingMode": "PAY_PER_REQUEST"
+                }
+            },
+
+            "TATOURNEYSTATS": {
+                "Type": "AWS::DynamoDB::Table",
+                "Properties": {
+                    "AttributeDefinitions" : [
+                        {
+                            "AttributeName": "player",
+                            "AttributeType": "S"
+                        }
+                    ],
+                    "KeySchema" : [
+                        {
+                            "AttributeName": "player",
+                            "KeyType": "HASH"
+                        }
+                    ],
+                    "TableName": "TaTourneyStats",
+                    "BillingMode": "PAY_PER_REQUEST"
+                }
+            },
+
+            "PubSubnet": {
+                "Type": "AWS::EC2::Subnet",
+                "Properties": {
+                    "VpcId": { "Ref": "DDBVPC" },
+                    "CidrBlock": "10.0.0.0/24",
+                    "MapPublicIpOnLaunch": true
+                }
+            },
+    
+            "DDBIGW" : {
+                "Type" : "AWS::EC2::InternetGateway",
+                "Properties" : {
+                }
+            },
+    
+            "IGWAttach" : {
+                "Type" : "AWS::EC2::VPCGatewayAttachment",
+                "Properties" : {
+                   "VpcId" : { "Ref" : "DDBVPC" },
+                    "InternetGatewayId" : { "Ref" : "DDBIGW" }
+                 }
+             },
+            
+            "DDBVPCRouteTable": {
+                "Type": "AWS::EC2::RouteTable",
+                "Properties": {
+                    "VpcId": { "Ref": "DDBVPC" }
+                }
+            },
+    
+            "DDBRtblAssoc": {
+                "Type": "AWS::EC2::SubnetRouteTableAssociation",
+                "Properties": {
+                    "SubnetId": { "Ref" : "PubSubnet" },
+                    "RouteTableId": { "Ref": "DDBVPCRouteTable" }
+                }
+            },
+    
+            "ToTheWorld": {
+                "Type": "AWS::EC2::Route",
+                "DependsOn": "DDBIGW",
+                "Properties": {
+                    "RouteTableId" : { "Ref" : "DDBVPCRouteTable" },
+                    "DestinationCidrBlock" : "0.0.0.0/0",
+                    "GatewayId" : { "Ref" : "DDBIGW" }
+                }
+            },
+    
+            "WorkInstanceSG": {
+                "Type": "AWS::EC2::SecurityGroup",
+                "Properties": {
+                    "GroupDescription": "Allows SSH Access to DDB Admin instance",
+                    "VpcId": { "Ref": "DDBVPC" },
+                    "SecurityGroupIngress" : [{
+                        "IpProtocol" : "tcp",
+                        "FromPort" : 22,
+                        "ToPort" : 22,
+                        "CidrIp" : "0.0.0.0/0"
+                     }]
+                }
+            },
+            
+            "Ec2Instance" : {
+                "Type" : "AWS::EC2::Instance",
+                "Properties" : {
+                    "ImageId" : "ami-48e71a35",
+                    "InstanceType" : "t2.micro",
+                      "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+                      "#!/bin/bash\n",
+                      "yum update -y\n",
+                      "yum install -y python36 python36-devel python36-pip python36-virtualenv\n",
+                      "pip-3.6 install boto3\n",
+                      "mkdir /home/cloud_user/.aws\n",
+                      "mkdir /root/.aws\n",
+                      "echo '[default]\nregion = us-east-1' > /home/cloud_user/.aws/config\n",
+                      "echo '[default]\nregion = us-east-1' > /root/.aws/config\n",
+                      "wget -P /home/cloud_user https://raw.githubusercontent.com/linuxacademy/content-dynamodb-deepdive/master/labs/processingstreamswithlambda/randomgame.py\n",
+                      "python3 /home/cloud_user/randomgame.py &\n",
+                      "pwd\n",
+                      "ls\n"
+                    ]]}},
+     
+                   "NetworkInterfaces": [ {
+                        "AssociatePublicIpAddress": true,
+                        "DeviceIndex": "0",
+                        "GroupSet": [{ "Ref" : "WorkInstanceSG" }],
+                        "SubnetId": { "Ref" : "PubSubnet" }
+                    } ],
+    
+                    "IamInstanceProfile": { "Ref": "DDBAdminProfile" }
+               },
+               "DependsOn": "TATOURNEY"
+           },
+    
+           "AccessKey": {
+                "Type": "AWS::IAM::AccessKey",
+                "Properties": {
+                    "UserName": "cloud_user"
+                }
+            },
+            
+            "DDBAdminRole": {
+                "Type": "AWS::IAM::Role",
+                "Properties": {
+                    "AssumeRolePolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "ec2.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                            }
+                        ]
+                    },
+                    "ManagedPolicyArns": [
+                        "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess"
+                    ]
+                }
+            },
+            
+            "LambdaDDBAdminRole": {
+                "Type": "AWS::IAM::Role",
+                "Properties": {
+                    "AssumeRolePolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "lambda.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                            }
+                        ]
+                    },
+                    "ManagedPolicyArns": [
+                        "arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess",
+                        "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+                    ]
+                }
+            },
+    
+            "DDBAdminProfile": {
+                "Type": "AWS::IAM::InstanceProfile",
+                "Properties": {
+                    "Roles": [
+                        { "Ref": "DDBAdminRole"}
+                    ]
+                }
+            }
+        }
+
+    }
